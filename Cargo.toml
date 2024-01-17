@@ -1,0 +1,14 @@
+[package]
+name = "fs_lib"
+version = "0.1.0"
+edition = "2021"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+[lib]
+crate-type = ["staticlib"]
+
+[dependencies]
+fs_cli = { path = "../fs_cli" }
+libc = "0.2.151"
+postcard = { version = "1.0.8", features = ["alloc"] }
+serde = { version = "1.0.193", features = ["derive"] }
