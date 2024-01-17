@@ -50,7 +50,7 @@ fn fs_init() -> fs_cli::fs::Fs {
 pub unsafe extern "C" fn get_patch_require() -> *const c_char {
     let data = FS_DATA.get_or_init(fs_init);
 
-    data.get("/root/patch_require.rb").unwrap().as_ptr()
+    data.get("/root/patch_require.rb").unwrap().as_ptr() as *const c_char
 }
 
 #[no_mangle]
@@ -63,7 +63,7 @@ unsafe extern "C" fn get_file_from_fs_func(_: VALUE, rb_path: VALUE) -> VALUE {
     let data = unsafe { FS_DATA.get().unwrap() };
 
     if let Some(script) = data.get(rb_path.to_str().unwrap()) {
-        return unsafe { rb_str_new_cstr(script.as_ptr()) };
+        return unsafe { rb_str_new_cstr(script.as_ptr() as *const c_char) };
     } else {
         return Ruby::NIL as VALUE;
 
@@ -98,7 +98,7 @@ unsafe extern "C" fn get_file_from_fs_func(_: VALUE, rb_path: VALUE) -> VALUE {
 
 #[no_mangle]
 unsafe extern "C" fn get_start_file_name_func(_: VALUE, _: VALUE) -> VALUE {
-    rb_str_new(&START_PATH, START_PATH_SIZE as i64)
+    rb_str_new(&(START_PATH as c_char), START_PATH_SIZE as i64)
 }
 
 #[no_mangle]
@@ -111,7 +111,7 @@ unsafe extern "C" fn get_start_file_script_func(_: VALUE, _: VALUE) -> VALUE {
         )))
         .unwrap();
 
-    rb_str_new(data.as_ptr(), data.len() as i64)
+    rb_str_new(data.as_ptr() as *const c_char, data.len() as i64)
 }
 
 #[no_mangle]
@@ -126,7 +126,7 @@ unsafe extern "C" fn get_load_paths_func(_: VALUE, _: VALUE) -> VALUE {
 
     let paths: Vec<VALUE> = data
         .split(|str| str == ',')
-        .map(|path| unsafe { rb_str_new(path.as_ptr(), path.len() as i64) })
+        .map(|path| unsafe { rb_str_new(path.as_ptr() as *const c_char, path.len() as i64) })
         .collect();
 
     unsafe { rb_ary_new_from_values(paths.len() as c_long, paths.as_ptr()) }
