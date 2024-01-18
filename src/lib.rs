@@ -98,7 +98,9 @@ unsafe extern "C" fn get_file_from_fs_func(_: VALUE, rb_path: VALUE) -> VALUE {
 
 #[no_mangle]
 unsafe extern "C" fn get_start_file_name_func(_: VALUE, _: VALUE) -> VALUE {
-    rb_str_new(&(START_PATH as c_char), START_PATH_SIZE as i64)
+    let data = std::slice::from_raw_parts(&START_PATH, START_PATH_SIZE as usize);
+    rb_str_new_cstr(data.as_ptr() as *const _)
+    // rb_str_new(START_PATH as *const i8, START_PATH_SIZE as i64)
 }
 
 #[no_mangle]
@@ -107,7 +109,7 @@ unsafe extern "C" fn get_start_file_script_func(_: VALUE, _: VALUE) -> VALUE {
     let data = data
         .get(std::str::from_utf8_unchecked(std::slice::from_raw_parts(
             &START_PATH,
-            START_PATH_SIZE as usize,
+            START_PATH_SIZE as usize - 1,
         )))
         .unwrap();
 
