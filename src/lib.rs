@@ -1,24 +1,22 @@
 use std::{
     cell::OnceCell,
-    ffi::{c_char, c_int, c_long, c_void, CStr, CString},
-    path::PathBuf,
-    str::FromStr,
+    collections::HashMap,
+    ffi::{c_char, c_int, c_long, CStr, CString},
 };
 
+static mut FS_DATA: OnceCell<Fs> = OnceCell::new();
 type VALUE = u64;
-
 extern "C" {
-    static FS: u8;
-    static FS_SIZE: u64;
-
+    static PATH_ARRAY: u8;
+    static PATH_ARRAY_SIZE: u64;
+    static START_AND_END: u64;
+    static START_AND_END_SIZE: u64;
+    static FILES: u8;
+    static FILES_SIZE: u64;
     static LOAD_PATHS: u8;
     static LOAD_PATHS_SIZE: u64;
 
-    static START_PATH: u8;
-    static START_PATH_SIZE: u64;
-
     static rb_cObject: VALUE;
-
     fn rb_define_class(name: *const c_char, rb_super: VALUE) -> VALUE;
     fn rb_string_value_ptr(v: *const VALUE) -> *const c_char;
     fn rb_define_singleton_method(
@@ -29,8 +27,53 @@ extern "C" {
     );
     fn rb_str_new(ptr: *const c_char, len: c_long) -> VALUE;
     fn rb_str_new_cstr(ptr: *const c_char) -> VALUE;
-    fn rb_raise(exc: VALUE, fmt: *const c_char);
     fn rb_ary_new_from_values(n: c_long, elts: *const VALUE) -> VALUE;
+}
+
+#[derive(Debug)]
+struct Fs<'a> {
+    path_map: Box<HashMap<&'a CStr, usize>>,
+    start_and_end: &'a [u64],
+    files: &'a [u8],
+}
+
+impl<'a> Fs<'a> {
+    pub fn from(
+        path_map: Box<HashMap<&'a CStr, usize>>,
+        start_and_end: &'a [u64],
+        files: &'a [u8],
+    ) -> Self {
+        Self {
+            path_map,
+            start_and_end,
+            files,
+        }
+    }
+
+    pub fn get_file(&self, path: &CStr) -> Option<&'a CStr> {
+        if let Some(index) = self.path_map.get(path) {
+            self.get_file_with_index(*index)
+        } else {
+            None
+        }
+    }
+
+    pub fn get_file_with_index(&self, index: usize) -> Option<&'a CStr> {
+        let mut start_and_end = self.start_and_end.iter().skip(index).take(2);
+        if let (Some(start), Some(end)) = (start_and_end.next(), start_and_end.next()) {
+            let (start, end) = (*start as usize, *end as usize);
+            Some(CStr::from_bytes_with_nul(&self.files[start..end]).unwrap())
+        } else {
+            None
+        }
+    }
+
+    pub fn get_file_name_with_index(&self, index: usize) -> &'a [u8] {
+        let path_array = unsafe { std::slice::from_raw_parts(&PATH_ARRAY, PATH_ARRAY_SIZE as _) };
+        let splited_array = path_array.split(|char| *char == b',').collect::<Vec<_>>();
+
+        splited_array[index]
+    }
 }
 
 enum Ruby {
@@ -39,84 +82,33 @@ enum Ruby {
     TRUE = 0x14,
 }
 
-static mut FS_DATA: OnceCell<fs_cli::fs::Fs> = OnceCell::new();
-
-fn fs_init() -> fs_cli::fs::Fs {
-    let data = unsafe { std::slice::from_raw_parts(&FS, FS_SIZE as usize) };
-    postcard::from_bytes(data).unwrap()
-}
-
 #[no_mangle]
 pub unsafe extern "C" fn get_patch_require() -> *const c_char {
-    let data = FS_DATA.get_or_init(fs_init);
+    let data = FS_DATA.get().unwrap();
+    let binding = CString::new("/root/patch_require.rb").unwrap();
+    let script = data
+        .get_file(binding.as_c_str())
+        .expect("Not found pacth_require.rb");
 
-    data.get("/root/patch_require.rb").unwrap().as_ptr() as *const c_char
+    script.as_ptr() as *const _
 }
 
-#[no_mangle]
-unsafe extern "C" fn get_file_from_fs_func(_: VALUE, rb_path: VALUE) -> VALUE {
-    let rb_path = rb_string_value_ptr(&rb_path);
-    let rb_path = PathBuf::from_str(CStr::from_ptr(rb_path).to_str().unwrap()).unwrap();
+unsafe extern "C" fn get_start_file_name_func(_: VALUE, _: VALUE) -> VALUE {
+    let data = FS_DATA.get().unwrap();
 
-    println!("get_file_from_fs: {:?}", rb_path);
+    rb_str_new_cstr(data.get_file_name_with_index(0).as_ptr() as *const _)
+}
 
-    let data = unsafe { FS_DATA.get().unwrap() };
+unsafe extern "C" fn get_start_file_script_func(_: VALUE, _: VALUE) -> VALUE {
+    let data = FS_DATA.get().unwrap();
 
-    if let Some(script) = data.get(rb_path.to_str().unwrap()) {
-        return unsafe { rb_str_new_cstr(script.as_ptr() as *const c_char) };
+    if let Some(name) = data.get_file_with_index(0) {
+        rb_str_new_cstr(name.as_ptr())
     } else {
-        return Ruby::NIL as VALUE;
-
-        // if let Some(_ext) = rb_path.extension() {
-        //     if let Some(script) = data.get(rb_path.to_str().unwrap()) {
-        //         return unsafe { rb_str_new_cstr(script.as_ptr()) };
-        //     } else {
-        //         // unsafe {
-        //         //     rb_raise(
-        //         //         rb_eLoadError,
-        //         //         format!("cannot load such file -- {}\0", rb_path.display()).as_ptr(),
-        //         //     )
-        //         // };
-        //         return Ruby::NIL as VALUE;
-        //     }
-        // } else {
-        //     for ext in EXT_STR.iter() {
-        //         if let Some(script) = data.get(rb_path.with_extension(ext).to_str().unwrap()) {
-        //             return unsafe { rb_str_new_cstr(script.as_ptr()) };
-        //         }
-        //     }
-
-        //     // unsafe {
-        //     //     rb_raise(
-        //     //         rb_eLoadError,
-        //     //         format!("cannot load such file -- {}\0", rb_path.display()).as_ptr(),
-        //     //     )
-        //     // };
-        //     return Ruby::NIL as VALUE;
+        Ruby::NIL as VALUE
     }
 }
 
-#[no_mangle]
-unsafe extern "C" fn get_start_file_name_func(_: VALUE, _: VALUE) -> VALUE {
-    let data = std::slice::from_raw_parts(&START_PATH, START_PATH_SIZE as usize);
-    rb_str_new_cstr(data.as_ptr() as *const _)
-    // rb_str_new(START_PATH as *const i8, START_PATH_SIZE as i64)
-}
-
-#[no_mangle]
-unsafe extern "C" fn get_start_file_script_func(_: VALUE, _: VALUE) -> VALUE {
-    let data = FS_DATA.get_or_init(fs_init);
-    let data = data
-        .get(std::str::from_utf8_unchecked(std::slice::from_raw_parts(
-            &START_PATH,
-            START_PATH_SIZE as usize - 1,
-        )))
-        .unwrap();
-
-    rb_str_new(data.as_ptr() as *const c_char, data.len() as i64)
-}
-
-#[no_mangle]
 unsafe extern "C" fn get_load_paths_func(_: VALUE, _: VALUE) -> VALUE {
     let data = unsafe {
         String::from_utf8_lossy(std::slice::from_raw_parts(
@@ -134,33 +126,63 @@ unsafe extern "C" fn get_load_paths_func(_: VALUE, _: VALUE) -> VALUE {
     unsafe { rb_ary_new_from_values(paths.len() as c_long, paths.as_ptr()) }
 }
 
+unsafe extern "C" fn get_file_from_fs_func(_: VALUE, rb_path: VALUE) -> VALUE {
+    let rb_path = rb_string_value_ptr(&rb_path);
+    let rb_path = CStr::from_ptr(rb_path);
+
+    println!("get_file_from_fs: {:?}", rb_path);
+
+    let data = unsafe { FS_DATA.get().unwrap() };
+
+    if let Some(script) = data.get_file(rb_path) {
+        rb_str_new_cstr(script.as_ptr() as *const c_char)
+    } else {
+        Ruby::NIL as VALUE
+    }
+}
+
 #[no_mangle]
-pub unsafe extern "C" fn Init_patch_require() {
+pub unsafe extern "C" fn Init_fs() {
+    // initialize fs
+    let mut path_map = HashMap::new();
+    let path_array = std::slice::from_raw_parts(&PATH_ARRAY, PATH_ARRAY_SIZE as _);
+    let splited_array = path_array.split(|char| *char == b',');
+
+    for (i, bytes) in splited_array.enumerate() {
+        let string =
+            std::ffi::CStr::from_bytes_with_nul(bytes).expect("Not null terminated string");
+        path_map.insert(string, i);
+    }
+
+    let start_and_end = std::slice::from_raw_parts(&START_AND_END, START_AND_END_SIZE as _);
+    let files = std::slice::from_raw_parts(&FILES, FILES_SIZE as _);
+
+    let fs = Fs::from(Box::new(path_map), start_and_end, files);
+    FS_DATA.set(fs).unwrap();
+
+    // define ruby class
     let c_name = CString::new("Fs").unwrap();
     let get_start_file_script = CString::new("get_start_file_script").unwrap();
     let get_start_file_name = CString::new("get_start_file_name").unwrap();
     let get_load_paths = CString::new("get_load_paths").unwrap();
-
     let get_file_from_fs = CString::new("get_file_from_fs").unwrap();
 
-    unsafe {
-        let class = rb_define_class(c_name.as_ptr(), rb_cObject);
-        rb_define_singleton_method(
-            class,
-            get_start_file_name.as_ptr(),
-            get_start_file_name_func,
-            0,
-        );
+    let class = rb_define_class(c_name.as_ptr(), rb_cObject);
+    rb_define_singleton_method(
+        class,
+        get_start_file_name.as_ptr(),
+        get_start_file_name_func,
+        0,
+    );
 
-        rb_define_singleton_method(
-            class,
-            get_start_file_script.as_ptr(),
-            get_start_file_script_func,
-            0,
-        );
+    rb_define_singleton_method(
+        class,
+        get_start_file_script.as_ptr(),
+        get_start_file_script_func,
+        0,
+    );
 
-        rb_define_singleton_method(class, get_load_paths.as_ptr(), get_load_paths_func, 0);
+    rb_define_singleton_method(class, get_load_paths.as_ptr(), get_load_paths_func, 0);
 
-        rb_define_singleton_method(class, get_file_from_fs.as_ptr(), get_file_from_fs_func, 1);
-    };
+    rb_define_singleton_method(class, get_file_from_fs.as_ptr(), get_file_from_fs_func, 1);
 }

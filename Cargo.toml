@@ -8,7 +8,4 @@ edition = "2021"
 crate-type = ["staticlib"]
 
 [dependencies]
-fs_cli = { path = "../fs_cli" }
 libc = "0.2.151"
-postcard = { version = "1.0.8", features = ["alloc"] }
-serde = { version = "1.0.193", features = ["derive"] }
