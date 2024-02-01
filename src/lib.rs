@@ -1,7 +1,8 @@
 use std::{
     cell::OnceCell,
     collections::HashMap,
-    ffi::{c_char, c_int, c_long, CStr, CString},
+    ffi::{c_char, c_int, c_long, CStr, CString, OsStr},
+    path::{Path, PathBuf},
 };
 
 static mut FS_DATA: OnceCell<Fs> = OnceCell::new();
@@ -32,14 +33,14 @@ extern "C" {
 
 #[derive(Debug)]
 struct Fs<'a> {
-    path_map: Box<HashMap<&'a CStr, usize>>,
+    path_map: Box<HashMap<&'a Path, usize>>,
     start_and_end: &'a [u64],
     files: &'a [u8],
 }
 
 impl<'a> Fs<'a> {
     pub fn from(
-        path_map: Box<HashMap<&'a CStr, usize>>,
+        path_map: Box<HashMap<&'a Path, usize>>,
         start_and_end: &'a [u64],
         files: &'a [u8],
     ) -> Self {
@@ -50,7 +51,7 @@ impl<'a> Fs<'a> {
         }
     }
 
-    pub fn get_file(&self, path: &CStr) -> Option<&'a CStr> {
+    pub fn get_file(&self, path: &Path) -> Option<&'a CStr> {
         if let Some(index) = self.path_map.get(path) {
             self.get_file_with_index(*index)
         } else {
@@ -85,10 +86,8 @@ enum Ruby {
 #[no_mangle]
 pub unsafe extern "C" fn get_patch_require() -> *const c_char {
     let data = FS_DATA.get().unwrap();
-    let binding = CString::new("/root/patch_require.rb").unwrap();
-    let script = data
-        .get_file(binding.as_c_str())
-        .expect("Not found pacth_require.rb");
+    let binding = Path::new("/root/patch_require.rb");
+    let script = data.get_file(binding).expect("Not found pacth_require.rb");
 
     script.as_ptr() as *const _
 }
@@ -130,11 +129,28 @@ unsafe extern "C" fn get_file_from_fs_func(_: VALUE, rb_path: VALUE) -> VALUE {
     let rb_path = rb_string_value_ptr(&rb_path);
     let rb_path = CStr::from_ptr(rb_path);
 
-    println!("get_file_from_fs: {:?}", rb_path);
+    let path = std::path::Path::new(rb_path.to_str().unwrap());
+
+    let mut norm_path = PathBuf::new();
+    for comp in path.components() {
+        match comp {
+            std::path::Component::Prefix(_) => todo!(),
+            std::path::Component::RootDir => norm_path.push("/"),
+            std::path::Component::CurDir => {
+                // nothing to do
+            }
+            std::path::Component::ParentDir => {
+                norm_path.pop();
+            }
+            std::path::Component::Normal(name) => {
+                norm_path.push(name);
+            }
+        }
+    }
 
     let data = unsafe { FS_DATA.get().unwrap() };
 
-    if let Some(script) = data.get_file(rb_path) {
+    if let Some(script) = data.get_file(&norm_path) {
         rb_str_new_cstr(script.as_ptr() as *const c_char)
     } else {
         Ruby::NIL as VALUE
@@ -151,7 +167,9 @@ pub unsafe extern "C" fn Init_fs() {
     for (i, bytes) in splited_array.enumerate() {
         let string =
             std::ffi::CStr::from_bytes_with_nul(bytes).expect("Not null terminated string");
-        path_map.insert(string, i);
+        let string = OsStr::from_encoded_bytes_unchecked(string.to_bytes());
+        let path = std::path::Path::new(string);
+        path_map.insert(path, i);
     }
 
     let start_and_end = std::slice::from_raw_parts(&START_AND_END, START_AND_END_SIZE as _);
