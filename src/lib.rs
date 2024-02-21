@@ -85,11 +85,18 @@ enum Ruby {
 
 #[no_mangle]
 pub unsafe extern "C" fn get_patch_require() -> *const c_char {
-    let data = FS_DATA.get().unwrap();
+    let data = FS_DATA.get_or_init(set_fs);
     let binding = Path::new("/root/patch_require.rb");
     let script = data.get_file(binding).expect("Not found pacth_require.rb");
 
     script.as_ptr() as *const _
+}
+
+#[no_mangle]
+pub unsafe extern "C" fn get_start_file_name() -> *const u8 {
+    let data = FS_DATA.get().unwrap();
+
+    data.get_file_name_with_index(0).as_ptr()
 }
 
 unsafe extern "C" fn get_start_file_name_func(_: VALUE, _: VALUE) -> VALUE {
@@ -134,7 +141,7 @@ unsafe extern "C" fn get_file_from_fs_func(_: VALUE, rb_path: VALUE) -> VALUE {
     let mut norm_path = PathBuf::new();
     for comp in path.components() {
         match comp {
-            std::path::Component::Prefix(_) => todo!(),
+            std::path::Component::Prefix(_) => todo!(), // for windows
             std::path::Component::RootDir => norm_path.push("/"),
             std::path::Component::CurDir => {
                 // nothing to do
@@ -157,27 +164,29 @@ unsafe extern "C" fn get_file_from_fs_func(_: VALUE, rb_path: VALUE) -> VALUE {
     }
 }
 
-#[no_mangle]
-pub unsafe extern "C" fn Init_fs() {
+fn set_fs() -> Fs<'static> {
     // initialize fs
     let mut path_map = HashMap::new();
-    let path_array = std::slice::from_raw_parts(&PATH_ARRAY, PATH_ARRAY_SIZE as _);
+    let path_array = unsafe { std::slice::from_raw_parts(&PATH_ARRAY, PATH_ARRAY_SIZE as _) };
     let splited_array = path_array.split(|char| *char == b',');
 
     for (i, bytes) in splited_array.enumerate() {
         let string =
             std::ffi::CStr::from_bytes_with_nul(bytes).expect("Not null terminated string");
-        let string = OsStr::from_encoded_bytes_unchecked(string.to_bytes());
+        let string = unsafe { OsStr::from_encoded_bytes_unchecked(string.to_bytes()) };
         let path = std::path::Path::new(string);
         path_map.insert(path, i);
     }
 
-    let start_and_end = std::slice::from_raw_parts(&START_AND_END, START_AND_END_SIZE as _);
-    let files = std::slice::from_raw_parts(&FILES, FILES_SIZE as _);
+    let start_and_end =
+        unsafe { std::slice::from_raw_parts(&START_AND_END, START_AND_END_SIZE as _) };
+    let files = unsafe { std::slice::from_raw_parts(&FILES, FILES_SIZE as _) };
 
-    let fs = Fs::from(Box::new(path_map), start_and_end, files);
-    FS_DATA.set(fs).unwrap();
+    Fs::from(Box::new(path_map), start_and_end, files)
+}
 
+#[no_mangle]
+pub unsafe extern "C" fn Init_fs() {
     // define ruby class
     let c_name = CString::new("Fs").unwrap();
     let get_start_file_script = CString::new("get_start_file_script").unwrap();
