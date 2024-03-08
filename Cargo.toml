@@ -1,5 +1,5 @@
 [package]
-name = "fs_lib"
+name = "kompo_fs"
 version = "0.1.0"
 edition = "2021"
 
